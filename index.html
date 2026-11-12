@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Habits">
+<meta name="theme-color" content="#eef1ec">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>Habits</title>
+<style>
+:root{--bg:#eef1ec;--card:#fff;--ink:#17211d;--mute:#5b6a63;--line:#d9dfd8;--ac:#1f5f4a;--onac:#fff;--soft:#dcebe3;--warn:#a85d0a;--wsoft:#f6e6cf}
+@media(prefers-color-scheme:dark){:root{--bg:#101613;--card:#18211d;--ink:#e8eee9;--mute:#9aaaa1;--line:#2a3731;--ac:#6fc2a0;--onac:#0e1a15;--soft:#1f3a2f;--warn:#e0a45a;--wsoft:#3a2c17}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 -apple-system,system-ui,sans-serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+main{max-width:480px;margin:0 auto;padding:20px 16px 48px}
+h1,h2,h3{font-family:ui-serif,"Iowan Old Style",Georgia,serif;font-weight:600;margin:0}
+h1{font-size:30px;line-height:1.15}h2{font-size:20px}h3{font-size:17px;margin:22px 0 4px}
+p{margin:0}.sub{color:var(--mute);font-size:14px}
+header{margin-bottom:18px}header .sub{margin-top:4px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:12px}
+.hero{background:var(--ac);color:var(--onac);border-color:var(--ac)}
+.hero .sub{color:inherit;opacity:.8;margin-top:8px}
+.big{font-family:ui-serif,Georgia,serif;font-size:22px;line-height:1.3}
+.row{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.chip{font-size:12px;padding:2px 10px;border-radius:99px;background:var(--soft);color:var(--ac);white-space:nowrap}
+.chip.s-protect{background:var(--wsoft);color:var(--warn)}
+.note{background:var(--wsoft);color:var(--warn);border-radius:10px;padding:10px 12px;font-size:14px;margin:12px 0 0}
+.ok{color:var(--ac);font-weight:600;margin-top:12px}
+button{font:inherit;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);padding:12px 14px;width:100%;margin-top:10px;cursor:pointer}
+button.pri{background:var(--ac);color:var(--onac);border-color:var(--ac);font-weight:600}
+button.lnk{border:0;background:none;color:var(--mute);width:auto;padding:6px 0;font-size:14px;text-decoration:underline}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+label{display:block;font-size:15px;margin-top:14px}
+label small{display:block;color:var(--mute);font-size:13px}
+input,select{font:inherit;width:100%;margin-top:6px;padding:11px 12px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
+:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
+.err{color:var(--warn);font-size:14px;margin-top:10px}
+.heat{display:grid;grid-template-columns:repeat(14,1fr);gap:4px;margin-top:10px}
+.heat i{aspect-ratio:1;border-radius:3px;background:var(--line)}.heat i.on{background:var(--ac)}.heat i.na{opacity:.4}
+dl{margin:10px 0 0}dt{font-size:13px;color:var(--mute);margin-top:10px}dd{margin:0}
+footer{margin-top:24px;text-align:center}
+</style>
+</head>
+<body>
+<main id="app"></main>
+<script>
+/* Storage layer. To add Supabase later, replace load/save with API calls; nothing else changes. */
+const Store={
+  key:'atomic-habits-v1',
+  load(){try{const d=JSON.parse(localStorage.getItem(this.key));if(d&&d.habits)return d}catch(e){}return{habits:[],checkins:[],misses:[]}},
+  save(d){try{localStorage.setItem(this.key,JSON.stringify(d))}catch(e){alert('Could not save. Export a backup and free up storage.')}}
+};
+let D=Store.load(),view={n:'today'},draft={},tips={};
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const iso=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+const today=()=>iso(new Date());
+const addDays=(s,n)=>{const d=new Date(s+'T12:00:00');d.setDate(d.getDate()+n);return iso(d)};
+const diff=(a,b)=>Math.round((new Date(a+'T12:00:00')-new Date(b+'T12:00:00'))/864e5);
+const cap=s=>s?s[0].toUpperCase()+s.slice(1):'';
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+const get=id=>D.habits.find(h=>h.id===id);
+const done=(h,d)=>D.checkins.some(c=>c.h===h.id&&c.d===d);
+const logged=(h,d)=>D.misses.some(m=>m.h===h.id&&m.d===d);
+const votes=h=>D.checkins.filter(c=>c.h===h.id).length;
+const dayNum=h=>diff(today(),h.start)+1;
+const save=()=>Store.save(D);
+const STAGE={launch:'Launch',build:'Build',automatic:'Automatic',protect:'Protect'};
+
+function streak(h){let d=today();if(!done(h,d))d=addDays(d,-1);let n=0;while(done(h,d)){n++;d=addDays(d,-1)}return n}
+function missedY(h){const y=addDays(today(),-1);return h.start<=y&&!done(h,y)&&!done(h,today())}
+function stageOf(h){return h.stage!=='automatic'&&missedY(h)?'protect':h.stage}
+function advance(){let ch=false;D.habits.forEach(h=>{if(h.status!=='active')return;const n=dayNum(h);
+  if(h.stage==='launch'&&n>14){h.stage='build';ch=true}
+  if(h.stage==='build'&&n>66&&votes(h)/n>=.8){h.stage='automatic';ch=true}});if(ch)save()}
+
+function msg(h){
+  const who=h.identity?"You're the type of person who "+h.identity+'.':"You're someone who shows up.";
+  const t=h.tiny||'do the tiny version';let m;
+  if(h.style==='gentle')m='No pressure. Just '+t.toLowerCase()+' and you can call today a win.';
+  else if(h.style==='tough')m=cap(t)+'. Two minutes. No negotiating.';
+  else m=who+' '+cap(t)+'. That is the whole job.';
+  const n=streak(h);
+  if(h.stage==='automatic')m+=' This one runs on its own now.';
+  else if(stageOf(h)==='protect')m='Never miss twice. '+cap(t)+' today and the streak lives.';
+  else if(n>=3)m+=' '+n+' days in a row.';
+  return m}
+function cueLine(h){
+  const p=[];if(h.stack)p.push('After I '+h.stack);if(h.place)p.push('in '+h.place);if(h.time)p.push('around '+h.time);
+  return p.join(', ')}
+
+function foot(){return '<footer><button class=lnk data-a=backup>Backup and restore</button></footer>'}
+function vToday(){
+  const hs=D.habits.filter(h=>h.status==='active'),d=today();
+  let o='<header><h1>Today</h1><p class=sub>'+new Date().toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'})+'</p></header>';
+  if(!D.habits.length)return o+'<div class=card><h2>Start your first habit</h2><p class=sub style="margin-top:6px">Pick one habit and who it makes you. The app walks you through the rest.</p><button class=pri data-a=new>Create habit</button></div>'+foot();
+  const next=hs.find(h=>h.start<=d&&!done(h,d));
+  if(next)o+='<div class="card hero"><p class=big>'+esc(msg(next))+'</p><p class=sub>'+esc(cueLine(next))+'</p></div>';
+  else if(hs.length)o+='<div class="card hero"><p class=big>All done for today. Every check-in is a vote for who you are becoming.</p></div>';
+  o+=hs.map(card).join('');
+  const rest=D.habits.filter(h=>h.status!=='active');
+  if(rest.length)o+='<h3>Paused and retired</h3>'+rest.map(h=>'<div class=card><div class=row><span>'+esc(h.name)+'</span><button class=lnk data-a=open data-id='+h.id+'>Open</button></div></div>').join('');
+  return o+'<button class=pri data-a=new>New habit</button>'+foot()}
+function card(h){
+  const d=today(),st=stageOf(h);let b='';
+  if(h.start>d)b='<p class=sub style="margin-top:10px">Starts '+h.start+'</p>';
+  else if(done(h,d))b='<p class=ok>Done today</p><button class=lnk data-a=undo data-id='+h.id+'>Undo</button>';
+  else{
+    if(st==='protect'){
+      const y=addDays(d,-1);
+      if(logged(h,y))b+=tips[h.id]?'<p class=note>'+esc(tips[h.id])+'</p>':'<p class=note>Never miss twice. Do the tiny version today.</p>';
+      else b+='<p class=note>You missed yesterday. What got in the way?</p><div class=two><button data-a=miss data-r=forgot data-id='+h.id+'>I forgot</button><button data-a=miss data-r=tired data-id='+h.id+'>Too tired</button></div><button data-a=miss data-r=cue data-id='+h.id+'>The cue never happened</button>';
+    }
+    if(h.stage==='build'&&h.full)b+='<div class=two><button class=pri data-a=check data-v=tiny data-id='+h.id+'>Tiny version</button><button class=pri data-a=check data-v=full data-id='+h.id+'>Full version</button></div><p class=sub style="margin-top:8px">Full: '+esc(h.full)+'</p>';
+    else b+='<button class=pri data-a=check data-v=tiny data-id='+h.id+'>I did it: '+esc(h.tiny)+'</button>';
+  }
+  return '<section class=card><div class=row><h2><a data-a=open data-id='+h.id+' style="cursor:pointer">'+esc(h.name)+'</a></h2><span class="chip '+(st==='protect'?'s-protect':'')+'">'+STAGE[st]+'</span></div><p class=sub>'+streak(h)+'-day streak, '+votes(h)+' votes'+(h.identity?' for being someone who '+esc(h.identity):'')+'</p>'+b+'</section>'}
+
+const F=(l,k,ph,hint,t)=>'<label>'+l+(hint?'<small>'+hint+'</small>':'')+'<input '+(t?'type='+t+' ':'')+'data-k='+k+' value="'+esc(draft[k])+'" placeholder="'+esc(ph||'')+'"></label>';
+function vWizard(){
+  const s=draft.step,e=view.err?'<p class=err>'+view.err+'</p>':'';let o='';
+  if(s===1)o='<header><h1>Dream it</h1><p class=sub>What habit, and who does it make you?</p></header>'+F('The habit','name','Read')+F('I am the type of person who...','identity','reads every day','Every check-in is a vote for this identity.');
+  if(s===2)o='<header><h1>Design it</h1><p class=sub>Make it obvious, attractive, easy, and satisfying.</p></header>'
+    +'<h3>Make it obvious</h3>'+F('After I...','stack','pour my morning coffee','Your existing habit becomes the cue.')+F('Where?','place','the armchair')+F('Around what time?','time','','','time')
+    +'<h3>Make it attractive</h3>'+F('Afterward, I get to...','bundle','check social media','Pair it with something you want.')
+    +'<h3>Make it easy</h3>'+F('Two-minute version','tiny','Read one page','Small enough that you cannot say no.')+F('Full version (optional, for later)','full','Read 20 pages')
+    +'<h3>Make it satisfying</h3>'+F('Instant reward','reward','Color in today on the calendar')
+    +'<h3>Reminder style</h3><select data-k=style>'+[['identity','Identity: who you are'],['gentle','Gentle'],['tough','Tough love']].map(x=>'<option value='+x[0]+(draft.style===x[0]?' selected':'')+'>'+x[1]+'</option>').join('')+'</select>';
+  if(s===3){const n=D.habits.filter(h=>h.status==='active'&&h.stage==='launch').length;
+    o='<header><h1>Commit</h1><p class=sub>Your plan in one place.</p></header><div class=card><p class=big>After I '+esc(draft.stack)+', I will '+esc(draft.tiny.toLowerCase())+(draft.place?' in '+esc(draft.place):'')+'.</p><dl><dt>Identity</dt><dd>I am the type of person who '+esc(draft.identity)+'.</dd>'+(draft.bundle?'<dt>Reward after</dt><dd>'+esc(draft.bundle)+'</dd>':'')+(draft.reward?'<dt>Instant reward</dt><dd>'+esc(draft.reward)+'</dd>':'')+'</dl></div>'+F('Start date','start','','','date')
+    +(n>=2?'<p class=note>You already have '+n+' habits in Launch. Starting small works best with one or two at a time.</p>':'');}
+  return o+e+'<button class=pri data-a=next>'+(s===3?"I'm in":'Continue')+'</button><button data-a='+(s===1?'home':'prev')+'>'+(s===1?'Cancel':'Back')+'</button>'}
+
+function vDetail(h){
+  let heat='';for(let i=27;i>=0;i--){const d=addDays(today(),-i);heat+='<i class="'+(done(h,d)?'on':d<h.start?'na':'')+'" title="'+d+'"></i>'}
+  const dl=[['Identity',h.identity?'I am the type of person who '+h.identity+'.':''],['Cue',cueLine(h)],['Reward after',h.bundle],['Tiny version',h.tiny],['Full version',h.full],['Instant reward',h.reward]].filter(x=>x[1]).map(x=>'<dt>'+x[0]+'</dt><dd>'+esc(x[1])+'</dd>').join('');
+  return '<header><h1>'+esc(h.name)+'</h1><p class=sub>'+STAGE[stageOf(h)]+' stage, day '+Math.max(dayNum(h),0)+'. '+votes(h)+' votes cast.</p></header><div class=card><p class=sub>Last 28 days</p><div class=heat>'+heat+'</div></div><div class=card><dl style="margin-top:0">'+dl+'</dl></div>'
+   +'<button data-a=ics data-id='+h.id+'>Add daily reminder to Calendar</button>'
+   +(h.status==='active'?'<button data-a=pause data-id='+h.id+'>Pause habit</button><button data-a=retire data-id='+h.id+'>Retire habit</button>':'<button class=pri data-a=resume data-id='+h.id+'>Resume habit</button>')
+   +'<button data-a=home>Back</button>'}
+function vBackup(){return '<header><h1>Backup</h1><p class=sub>Your data lives only on this phone. Export a copy now and then.</p></header><button class=pri data-a=export>Export backup file</button><label>Restore from a backup file<input type=file accept=".json,application/json" id=imp></label>'+(view.msg?'<p class=ok>'+view.msg+'</p>':'')+'<button data-a=home>Back</button>'}
+
+function render(){
+  const a=document.getElementById('app'),h=view.id&&get(view.id);
+  a.innerHTML=view.n==='wizard'?vWizard():view.n==='detail'&&h?vDetail(h):view.n==='backup'?vBackup():vToday();
+  const f=document.getElementById('imp');if(f)f.onchange=importFile}
+function go(n,x){view=Object.assign({n:n},x||{});render();window.scrollTo(0,0)}
+function importFile(e){const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{try{const d=JSON.parse(r.result);if(!Array.isArray(d.habits))throw 0;D={habits:d.habits,checkins:d.checkins||[],misses:d.misses||[]};save();go('backup',{msg:'Backup restored.'})}catch(x){go('backup',{msg:'That file is not a valid backup.'})}};r.readAsText(f)}
+function download(name,type,text){const u=URL.createObjectURL(new Blob([text],{type:type})),a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),2000)}
+function makeIcs(h){
+  const t=(h.time||'08:00').replace(':',''),s=h.start.replace(/-/g,''),x=v=>String(v).replace(/[,;]/g,' ').replace(/\n/g,' ');
+  return ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Habits//EN','BEGIN:VEVENT','UID:'+h.id+'@habits','DTSTAMP:'+new Date().toISOString().replace(/[-:]/g,'').split('.')[0]+'Z','DTSTART:'+s+'T'+t+'00','DURATION:PT10M','RRULE:FREQ=DAILY','SUMMARY:'+x(h.tiny),'DESCRIPTION:'+x(msg(h)),'BEGIN:VALARM','TRIGGER:PT0S','ACTION:DISPLAY','DESCRIPTION:'+x(h.tiny),'END:VALARM','END:VEVENT','END:VCALENDAR'].join('\r\n')}
+
+document.addEventListener('input',e=>{const k=e.target.dataset&&e.target.dataset.k;if(k)draft[k]=e.target.value});
+document.addEventListener('click',e=>{
+  const el=e.target.closest('[data-a]');if(!el)return;
+  const a=el.dataset.a,h=get(el.dataset.id),d=today();
+  if(a==='new'){draft={step:1,style:'identity',time:'08:00',start:d};go('wizard')}
+  else if(a==='home')go('today');
+  else if(a==='open')go('detail',{id:el.dataset.id});
+  else if(a==='backup')go('backup');
+  else if(a==='prev'){draft.step--;go('wizard')}
+  else if(a==='next'){
+    const s=draft.step,t=k=>(draft[k]||'').trim();
+    if(s===1&&(!t('name')||!t('identity')))return go('wizard',{err:'Add the habit and who it makes you.'});
+    if(s===2&&(!t('stack')||!t('tiny')))return go('wizard',{err:'Add what you do right before it, and the two-minute version.'});
+    if(s<3){draft.step++;go('wizard')}
+    else{D.habits.push({id:uid(),name:t('name'),identity:t('identity'),stack:t('stack'),place:t('place'),time:draft.time,bundle:t('bundle'),tiny:t('tiny'),full:t('full'),reward:t('reward'),style:draft.style,start:draft.start||d,stage:'launch',status:'active'});save();go('today')}}
+  else if(a==='check'&&h){if(!done(h,d))D.checkins.push({h:h.id,d:d,v:el.dataset.v});save();render()}
+  else if(a==='undo'&&h){D.checkins=D.checkins.filter(c=>!(c.h===h.id&&c.d===d));save();render()}
+  else if(a==='miss'&&h){D.misses.push({h:h.id,d:addDays(d,-1),r:el.dataset.r});
+    tips[h.id]={forgot:'Make the cue louder: add a daily Calendar reminder from the habit page.',tired:'Shrink it. Do just the first 30 seconds of the tiny version.',cue:'Your anchor did not happen. Pick a different "After I..." cue in a new plan.'}[el.dataset.r];save();render()}
+  else if(a==='pause'&&h){h.status='paused';save();go('today')}
+  else if(a==='retire'&&h){h.status='retired';save();go('today')}
+  else if(a==='resume'&&h){h.status='active';save();go('today')}
+  else if(a==='ics'&&h)download(h.name.replace(/\W+/g,'-')+'.ics','text/calendar',makeIcs(h));
+  else if(a==='export')download('habits-backup-'+d+'.json','application/json',JSON.stringify(D,null,1));
+});
+advance();render();
+if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
+</script>
+</body>
+</html>
