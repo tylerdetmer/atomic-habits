@@ -41,6 +41,9 @@ input,select{font:inherit;width:100%;margin-top:6px;padding:11px 12px;border-rad
 .heat i{aspect-ratio:1;border-radius:3px;background:var(--line)}.heat i.on{background:var(--ac)}.heat i.na{opacity:.4}
 dl{margin:10px 0 0}dt{font-size:13px;color:var(--mute);margin-top:10px}dd{margin:0}
 footer{margin-top:24px;text-align:center}
+.three{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.three button{padding:10px 4px;font-size:14px}
+button.sel-n{background:var(--soft);color:var(--ink);border-color:var(--ac);font-weight:600}
+button.sel-m{background:var(--wsoft);color:var(--warn);border-color:var(--warn);font-weight:600}
 </style>
 </head>
 <body>
@@ -53,6 +56,55 @@ const Store={
   save(d){try{localStorage.setItem(this.key,JSON.stringify(d))}catch(e){alert('Could not save. Export a backup and free up storage.')}}
 };
 let D=Store.load(),view={n:'today'},draft={},tips={};
+D.score=D.score||[];
+/* Cloud sync via Supabase REST. Last write wins; works offline and syncs later. */
+const SB={url:'https://tchxvrzppkjyqyjphsqc.supabase.co',key:'sb_publishable_8vmwuQlDGR47zFeZiJnfwg_npi890-L'};
+const Cloud={
+  sk:'atomic-habits-session',dk:'atomic-habits-dirty',timer:null,err:'',
+  ses(){try{return JSON.parse(localStorage.getItem(this.sk))}catch(e){return null}},
+  setSes(v){v?localStorage.setItem(this.sk,JSON.stringify(v)):localStorage.removeItem(this.sk)},
+  dirty(v){if(v===undefined)return localStorage.getItem(this.dk)==='1';v?localStorage.setItem(this.dk,'1'):localStorage.removeItem(this.dk)},
+  async auth(grant,body){
+    const r=await fetch(SB.url+'/auth/v1/token?grant_type='+grant,{method:'POST',headers:{apikey:SB.key,'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json();
+    if(!r.ok){const e=new Error(j.error_description||j.msg||'Sign-in failed');e.bad=r.status>=400&&r.status<500;throw e}
+    const v={at:j.access_token,rt:j.refresh_token,exp:Date.now()+j.expires_in*1000,uid:j.user.id,email:j.user.email};this.setSes(v);return v},
+  async token(){
+    let v=this.ses();if(!v)throw new Error('Signed out');
+    if(v.exp-60000<Date.now()){try{v=await this.auth('refresh_token',{refresh_token:v.rt})}catch(e){if(e.bad)this.setSes(null);throw e}}
+    return v},
+  async api(path,o){
+    const v=await this.token();
+    const r=await fetch(SB.url+'/rest/v1/'+path,Object.assign({},o,{headers:Object.assign({apikey:SB.key,Authorization:'Bearer '+v.at,'Content-Type':'application/json'},o&&o.headers)}));
+    if(!r.ok)throw new Error('Server said '+r.status+(r.status===404?' (is the app_state table created?)':''));
+    return r.status===204?null:r.json().catch(()=>null)},
+  queue(){if(!this.ses())return;this.dirty(true);clearTimeout(this.timer);this.timer=setTimeout(()=>this.push(),700)},
+  async push(){
+    const v=this.ses();if(!v)return false;
+    if(!D.ts){D.ts=Date.now();Store.save(D)}
+    try{await this.api('app_state',{method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify({user_id:v.uid,data:D,updated_at:new Date().toISOString()})});this.dirty(false);this.err='';return true}
+    catch(e){this.err=e.message;return false}},
+  async sync(first){
+    if(!this.ses())return 'out';
+    try{
+      if(this.dirty()&&!first)return (await this.push())?'ok':'offline';
+      const rows=await this.api('app_state?select=data'),r=rows&&rows[0]&&rows[0].data;
+      const has=x=>x&&((x.habits&&x.habits.length)||(x.score&&x.score.length));
+      if(!has(r))return (await this.push())?'ok':'offline';
+      let cloud=(r.ts||0)>(D.ts||0);
+      if(first&&has(D)&&D.ts!==r.ts)cloud=confirm('This phone and your cloud account both have data. OK uses the cloud copy. Cancel keeps this phone and replaces the cloud copy.');
+      if(cloud){D=Object.assign({habits:[],checkins:[],misses:[],score:[]},r);Store.save(D);this.dirty(false);render()}
+      else if(first||(D.ts||0)>(r.ts||0))return (await this.push())?'ok':'offline';
+      this.err='';return 'ok'}
+    catch(e){this.err=e.message;return 'offline'}}
+};
+async function doLogin(){
+  const e=document.getElementById('ae').value.trim(),p=document.getElementById('ap').value;
+  if(!e||!p)return go('account',{err:'Enter your email and password.'});
+  try{await Cloud.auth('password',{email:e,password:p});const r=await Cloud.sync(true);go('account',r==='ok'?{msg:'Signed in and synced.'}:{err:'Signed in, but sync failed: '+Cloud.err})}
+  catch(x){go('account',{err:x.message})}}
+async function doSync(){const r=await Cloud.sync(false);go('account',r==='ok'?{msg:'Synced.'}:{err:'Could not sync: '+Cloud.err+'. Changes upload when you are back online.'})}
+
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const iso=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
 const today=()=>iso(new Date());
@@ -65,7 +117,7 @@ const done=(h,d)=>D.checkins.some(c=>c.h===h.id&&c.d===d);
 const logged=(h,d)=>D.misses.some(m=>m.h===h.id&&m.d===d);
 const votes=h=>D.checkins.filter(c=>c.h===h.id).length;
 const dayNum=h=>diff(today(),h.start)+1;
-const save=()=>Store.save(D);
+const save=()=>{D.ts=Date.now();Store.save(D);Cloud.queue()};
 const STAGE={launch:'Launch',build:'Build',automatic:'Automatic',protect:'Protect'};
 
 function streak(h){let d=today();if(!done(h,d))d=addDays(d,-1);let n=0;while(done(h,d)){n++;d=addDays(d,-1)}return n}
@@ -90,18 +142,18 @@ function cueLine(h){
   const p=[];if(h.stack)p.push('After I '+h.stack);if(h.place)p.push('in '+h.place);if(h.time)p.push('around '+h.time);
   return p.join(', ')}
 
-function foot(){return '<footer><button class=lnk data-a=backup>Backup and restore</button></footer>'}
+function foot(){return '<footer><button class=lnk data-a=account>Sync and account</button><br><button class=lnk data-a=backup>Backup and restore</button></footer>'}
 function vToday(){
   const hs=D.habits.filter(h=>h.status==='active'),d=today();
   let o='<header><h1>Today</h1><p class=sub>'+new Date().toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'})+'</p></header>';
-  if(!D.habits.length)return o+'<div class=card><h2>Start your first habit</h2><p class=sub style="margin-top:6px">Pick one habit and who it makes you. The app walks you through the rest.</p><button class=pri data-a=new>Create habit</button></div>'+foot();
+  if(!D.habits.length)return o+'<div class=card><h2>Start your first habit</h2><p class=sub style="margin-top:6px">Pick one habit and who it makes you. The app walks you through the rest.</p><button class=pri data-a=new>Create habit</button><button data-a=score>Start with a habit scorecard</button></div>'+foot();
   const next=hs.find(h=>h.start<=d&&!done(h,d));
   if(next)o+='<div class="card hero"><p class=big>'+esc(msg(next))+'</p><p class=sub>'+esc(cueLine(next))+'</p></div>';
   else if(hs.length)o+='<div class="card hero"><p class=big>All done for today. Every check-in is a vote for who you are becoming.</p></div>';
   o+=hs.map(card).join('');
   const rest=D.habits.filter(h=>h.status!=='active');
   if(rest.length)o+='<h3>Paused and retired</h3>'+rest.map(h=>'<div class=card><div class=row><span>'+esc(h.name)+'</span><button class=lnk data-a=open data-id='+h.id+'>Open</button></div></div>').join('');
-  return o+'<button class=pri data-a=new>New habit</button>'+foot()}
+  return o+'<button class=pri data-a=new>New habit</button><button data-a=score>Habit scorecard</button>'+foot()}
 function card(h){
   const d=today(),st=stageOf(h);let b='';
   if(h.start>d)b='<p class=sub style="margin-top:10px">Starts '+h.start+'</p>';
@@ -139,20 +191,34 @@ function vDetail(h){
    +'<button data-a=ics data-id='+h.id+'>Add daily reminder to Calendar</button>'
    +(h.status==='active'?'<button data-a=pause data-id='+h.id+'>Pause habit</button><button data-a=retire data-id='+h.id+'>Retire habit</button>':'<button class=pri data-a=resume data-id='+h.id+'>Resume habit</button>')
    +'<button data-a=home>Back</button>'}
+function vAccount(){
+  const v=Cloud.ses(),m=view.msg?'<p class=ok>'+esc(view.msg)+'</p>':'',e=view.err?'<p class=err>'+esc(view.err)+'</p>':'';
+  if(v)return '<header><h1>Sync</h1><p class=sub>Signed in as '+esc(v.email)+'. Changes upload automatically.</p></header>'+(Cloud.dirty()?'<p class=note>Some changes have not uploaded yet.</p>':'')+m+e+'<button class=pri data-a=syncnow>Sync now</button><button data-a=logout>Sign out</button><button data-a=home>Back</button>';
+  return '<header><h1>Sync</h1><p class=sub>Sign in to keep Safari and your Home Screen app on the same data.</p></header><label>Email<input id=ae type=email autocomplete=username autocapitalize=none></label><label>Password<input id=ap type=password autocomplete=current-password></label>'+m+e+'<button class=pri data-a=login>Sign in</button><button data-a=home>Back</button>'}
 function vBackup(){return '<header><h1>Backup</h1><p class=sub>Your data lives only on this phone. Export a copy now and then.</p></header><button class=pri data-a=export>Export backup file</button><label>Restore from a backup file<input type=file accept=".json,application/json" id=imp></label>'+(view.msg?'<p class=ok>'+view.msg+'</p>':'')+'<button data-a=home>Back</button>'}
 
+function vScore(){
+  const S=D.score,n=r=>S.filter(x=>x.r===r).length;
+  const B=[['p','+ Helps','pri'],['n','= Neutral','sel-n'],['m','- Hurts','sel-m']];
+  const rows=S.map(x=>'<div class=card><div class=row><span>'+esc(x.t)+'</span><button class=lnk data-a=sdel data-id='+x.id+'>Remove</button></div><div class=three>'+B.map(b=>'<button class="'+(x.r===b[0]?b[2]:'')+'" data-a=srate data-r='+b[0]+' data-id='+x.id+'>'+b[1]+'</button>').join('')+'</div></div>').join('');
+  return '<header><h1>Habit scorecard</h1><p class=sub>List what you do in a normal day, from waking up to bedtime. Rate each one by whether it helps the person you want to become.</p></header>'
+  +'<label>Add a habit<input id=sin placeholder="Check my phone in bed"></label><button class=pri data-a=sadd>Add to list</button>'
+  +(S.length?'<h3>Your day</h3>'+rows+'<div class=card><p class=big>'+n('p')+' helpful, '+n('n')+' neutral, '+n('m')+' hurting</p><p class=sub style="margin-top:8px">A habit is not good or bad on its own. It depends on who you want to be. Keep the helpful ones, and for each one that hurts, notice what cue sets it off.</p></div>':'<p class=sub style="margin-top:14px">Start with the first thing you do after waking up, then keep going through the day.</p>')
+  +'<button data-a=new>Turn one into a new habit</button><button data-a=home>Back</button>'}
+function addScore(){const i=document.getElementById('sin'),t=i&&i.value.trim();if(!t)return;D.score.push({id:uid(),t:t,r:''});save();render();document.getElementById('sin').focus()}
 function render(){
   const a=document.getElementById('app'),h=view.id&&get(view.id);
-  a.innerHTML=view.n==='wizard'?vWizard():view.n==='detail'&&h?vDetail(h):view.n==='backup'?vBackup():vToday();
+  a.innerHTML=view.n==='wizard'?vWizard():view.n==='detail'&&h?vDetail(h):view.n==='backup'?vBackup():view.n==='score'?vScore():view.n==='account'?vAccount():vToday();
   const f=document.getElementById('imp');if(f)f.onchange=importFile}
 function go(n,x){view=Object.assign({n:n},x||{});render();window.scrollTo(0,0)}
-function importFile(e){const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{try{const d=JSON.parse(r.result);if(!Array.isArray(d.habits))throw 0;D={habits:d.habits,checkins:d.checkins||[],misses:d.misses||[]};save();go('backup',{msg:'Backup restored.'})}catch(x){go('backup',{msg:'That file is not a valid backup.'})}};r.readAsText(f)}
+function importFile(e){const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{try{const d=JSON.parse(r.result);if(!Array.isArray(d.habits))throw 0;D={habits:d.habits,checkins:d.checkins||[],misses:d.misses||[],score:d.score||[]};save();go('backup',{msg:'Backup restored.'})}catch(x){go('backup',{msg:'That file is not a valid backup.'})}};r.readAsText(f)}
 function download(name,type,text){const u=URL.createObjectURL(new Blob([text],{type:type})),a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),2000)}
 function makeIcs(h){
   const t=(h.time||'08:00').replace(':',''),s=h.start.replace(/-/g,''),x=v=>String(v).replace(/[,;]/g,' ').replace(/\n/g,' ');
   return ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Habits//EN','BEGIN:VEVENT','UID:'+h.id+'@habits','DTSTAMP:'+new Date().toISOString().replace(/[-:]/g,'').split('.')[0]+'Z','DTSTART:'+s+'T'+t+'00','DURATION:PT10M','RRULE:FREQ=DAILY','SUMMARY:'+x(h.tiny),'DESCRIPTION:'+x(msg(h)),'BEGIN:VALARM','TRIGGER:PT0S','ACTION:DISPLAY','DESCRIPTION:'+x(h.tiny),'END:VALARM','END:VEVENT','END:VCALENDAR'].join('\r\n')}
 
 document.addEventListener('input',e=>{const k=e.target.dataset&&e.target.dataset.k;if(k)draft[k]=e.target.value});
+document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='sin')addScore()});
 document.addEventListener('click',e=>{
   const el=e.target.closest('[data-a]');if(!el)return;
   const a=el.dataset.a,h=get(el.dataset.id),d=today();
@@ -160,6 +226,14 @@ document.addEventListener('click',e=>{
   else if(a==='home')go('today');
   else if(a==='open')go('detail',{id:el.dataset.id});
   else if(a==='backup')go('backup');
+  else if(a==='score')go('score');
+  else if(a==='account')go('account');
+  else if(a==='login')doLogin();
+  else if(a==='syncnow')doSync();
+  else if(a==='logout'){Cloud.setSes(null);Cloud.dirty(false);go('account',{msg:'Signed out. Your data stays on this phone.'})}
+  else if(a==='sadd')addScore();
+  else if(a==='sdel'){D.score=D.score.filter(x=>x.id!==el.dataset.id);save();render()}
+  else if(a==='srate'){const x=D.score.find(x=>x.id===el.dataset.id);if(x){x.r=x.r===el.dataset.r?'':el.dataset.r;save();render()}}
   else if(a==='prev'){draft.step--;go('wizard')}
   else if(a==='next'){
     const s=draft.step,t=k=>(draft[k]||'').trim();
@@ -177,7 +251,9 @@ document.addEventListener('click',e=>{
   else if(a==='ics'&&h)download(h.name.replace(/\W+/g,'-')+'.ics','text/calendar',makeIcs(h));
   else if(a==='export')download('habits-backup-'+d+'.json','application/json',JSON.stringify(D,null,1));
 });
-advance();render();
+advance();render();Cloud.sync(false);
+addEventListener('online',()=>Cloud.sync(false));
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)Cloud.sync(false)});
 if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
 </script>
